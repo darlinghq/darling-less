@@ -74,6 +74,8 @@ add_darling_executable(lessecho less/lessecho.c)
 
 target_link_libraries(less ncurses)
 
+InstallSymlink(less libexec/darling/usr/bin/more)
 install(TARGETS less lessecho
 	DESTINATION libexec/darling/usr/bin)
 
+install(FILES less.1 more.1 lessecho.1 DESTINATION libexec/darling/usr/share/man/man1)

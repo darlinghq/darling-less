@@ -63,7 +63,7 @@ set(less_sources
 	less/output.c
 	less/position.c
 	less/prompt.c
-	less/regexp.c
+	#less/regexp.c
 	less/screen.c
 	#less/scrsize.c
 	less/search.c
@@ -84,4 +84,3 @@ install(TARGETS less lessecho
 	DESTINATION libexec/darling/usr/bin)
 
 install(FILES less.1 more.1 lessecho.1 DESTINATION libexec/darling/usr/share/man/man1)
-

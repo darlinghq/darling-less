@@ -1,11 +1,10 @@
 /*
- * Copyright (C) 1984-2007  Mark Nudelman
+ * Copyright (C) 1984-2016  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
  *
- * For more information about less, or for information on how to 
- * contact the author, see the README file.
+ * For more information, see the README file.
  */
 
 
@@ -17,6 +16,7 @@
 
 #include "less.h"
 #include "charset.h"
+#include "position.h"
 
 static char *linebuf = NULL;	/* Buffer which holds the current output line */
 static char *attr = NULL;	/* Extension of linebuf to hold attributes */
@@ -27,6 +27,7 @@ public int hshift;		/* Desired left-shift of output line buffer */
 public int tabstops[TABSTOP_MAX] = { 0 }; /* Custom tabstops */
 public int ntabstops = 1;	/* Number of tabstops */
 public int tabdefault = 8;	/* Default repeated tabstops */
+public POSITION highest_hilite;	/* Pos of last hilite in file found so far */
 
 static int curr;		/* Index into linebuf */
 static int column;		/* Printable length, accounting for
@@ -35,8 +36,7 @@ static int overstrike;		/* Next char should overstrike previous char */
 static int last_overstrike = AT_NORMAL;
 static int is_null_line;	/* There is no current line */
 static int lmargin;		/* Left margin */
-static int line_matches;	/* Number of search matches in this line */
-static char pendc;
+static LWCHAR pendc;
 static POSITION pendpos;
 static char *end_ansi_chars;
 static char *mid_ansi_chars;
@@ -59,7 +59,6 @@ extern int bl_s_width, bl_e_width;
 extern int so_s_width, so_e_width;
 extern int sc_width, sc_height;
 extern int utf_mode;
-extern int oldbot;
 extern POSITION start_attnpos;
 extern POSITION end_attnpos;
 
@@ -80,7 +79,7 @@ init_line()
 
 	mid_ansi_chars = lgetenv("LESSANSIMIDCHARS");
 	if (mid_ansi_chars == NULL || *mid_ansi_chars == '\0')
-		mid_ansi_chars = "0123456789;[?!\"'#%()*+ ";
+		mid_ansi_chars = "0123456789:;[?!\"'#%()*+ ";
 
 	linebuf = (char *) ecalloc(LINEBUF_SIZE, sizeof(char));
 	attr = (char *) ecalloc(LINEBUF_SIZE, sizeof(char));
@@ -162,9 +161,6 @@ prewind()
 	lmargin = 0;
 	if (status_col)
 		lmargin += 1;
-#if HILITE_SEARCH
-	line_matches = 0;
-#endif
 }
 
 /*
@@ -214,13 +210,13 @@ plinenum(pos)
 		int n;
 
 		linenumtoa(linenum, buf);
-		n = strlen(buf);
+		n = (int) strlen(buf);
 		if (n < MIN_LINENUM_WIDTH)
 			n = MIN_LINENUM_WIDTH;
 		sprintf(linebuf+curr, "%*s ", n, buf);
 		n++;  /* One space after the line number. */
 		for (i = 0; i < n; i++)
-			attr[curr+i] = AT_NORMAL;
+			attr[curr+i] = AT_BOLD;
 		curr += n;
 		column += n;
 		lmargin += n;
@@ -496,7 +492,7 @@ backc()
 	       && column > lmargin
 	       && (!(attr[curr - 1] & (AT_ANSI|AT_BINARY))))
 	{
-		curr = p - linebuf;
+		curr = (int) (p - linebuf);
 		prev_ch = step_char(&p, -1, linebuf + lmargin);
 		width = pwidth(ch, attr[curr], prev_ch);
 		column -= width;
@@ -590,9 +586,13 @@ store_char(ch, a, rep, pos)
 			 * Override the attribute passed in.
 			 */
 			if (a != AT_ANSI)
+			{
+				if (highest_hilite != NULL_POSITION &&
+				    pos > highest_hilite)
+				    	highest_hilite = pos;
 				a |= AT_HILITE;
+			}
 		}
-		line_matches += matches;
 	}
 #endif
 
@@ -600,11 +600,12 @@ store_char(ch, a, rep, pos)
 	{
 		if (!is_ansi_end(ch) && !is_ansi_middle(ch)) {
 			/* Remove whole unrecognized sequence.  */
+			char *p = &linebuf[curr];
+			LWCHAR bch;
 			do {
-				if (curr == 0)
-					break;
-				--curr;
-			} while (!IS_CSI_START(linebuf[curr]));
+				bch = step_char(&p, -1, linebuf);
+			} while (p > linebuf && !IS_CSI_START(bch));
+			curr = (int) (p - linebuf);
 			return 0;
 		}
 		a = AT_ANSI;	/* Will force re-AT_'ing around it.  */
@@ -697,7 +698,7 @@ store_tab(attr, pos)
 
 	static int
 store_prchar(c, pos)
-	char c;
+	LWCHAR c;
 	POSITION pos;
 {
 	char *s;
@@ -741,13 +742,15 @@ flush_mbc_buf(pos)
  */
 	public int
 pappend(c, pos)
-	char c;
+	unsigned char c;
 	POSITION pos;
 {
 	int r;
 
 	if (pendc)
 	{
+		if (c == '\r' && pendc == '\r')
+			return (0);
 		if (do_append(pendc, NULL, pendpos))
 			/*
 			 * Oops.  We've probably lost the char which
@@ -781,7 +784,7 @@ pappend(c, pos)
 
 	if (!utf_mode)
 	{
-		r = do_append((LWCHAR) c, NULL, pos);
+		r = do_append(c, NULL, pos);
 	} else
 	{
 		/* Perform strict validation in all possible cases. */
@@ -791,7 +794,7 @@ pappend(c, pos)
 			mbc_buf_index = 1;
 			*mbc_buf = c;
 			if (IS_ASCII_OCTET(c))
-				r = do_append((LWCHAR) c, NULL, pos);
+				r = do_append(c, NULL, pos);
 			else if (IS_UTF8_LEAD(c))
 			{
 				mbc_buf_len = utf_len(c);
@@ -805,7 +808,7 @@ pappend(c, pos)
 			mbc_buf[mbc_buf_index++] = c;
 			if (mbc_buf_index < mbc_buf_len)
 				return (0);
-			if (is_utf8_well_formed(mbc_buf))
+			if (is_utf8_well_formed(mbc_buf, mbc_buf_index))
 				r = do_append(get_wchar(mbc_buf), mbc_buf, mbc_pos);
 			else
 				/* Complete, but not shortest form, sequence. */
@@ -885,8 +888,14 @@ do_append(ch, rep, pos)
 		 * or just deletion of the character in the buffer.
 		 */
 		overstrike = utf_mode ? -1 : 0;
-		/* To be correct, this must be a base character.  */
-		prev_ch = get_wchar(linebuf + curr);
+		if (utf_mode)
+		{
+			/* To be correct, this must be a base character.  */
+			prev_ch = get_wchar(linebuf + curr);
+		} else
+		{
+			prev_ch = (unsigned char) linebuf[curr];
+		}
 		a = attr[curr];
 		if (ch == prev_ch)
 		{
@@ -994,11 +1003,10 @@ pflushmbc()
  * Terminate the line in the line buffer.
  */
 	public void
-pdone(endline)
+pdone(endline, forw)
 	int endline;
+	int forw;
 {
-	int nl;
-
 	(void) pflushmbc();
 
 	if (pendc && (pendc != '\r' || !endline))
@@ -1039,43 +1047,46 @@ pdone(endline)
 	 * the next line is blank.  In that case the single newline output for
 	 * that blank line would be ignored!)
 	 */
-	if (!oldbot)
-		nl = (column < sc_width || !auto_wrap || (endline && ignaw) || ctldisp == OPT_ON);
-	else
-		nl = (column < sc_width || !auto_wrap || ignaw || ctldisp == OPT_ON);
-	if (nl)
+	if (column < sc_width || !auto_wrap || (endline && ignaw) || ctldisp == OPT_ON)
 	{
 		linebuf[curr] = '\n';
 		attr[curr] = AT_NORMAL;
 		curr++;
 	} 
-	else if (ignaw && !auto_wrap && column >= sc_width)
+	else if (ignaw && column >= sc_width && forw)
 	{
 		/*
-		 * Big horrible kludge.
-		 * No-wrap terminals are too hard to deal with when they get in
-		 * the state where a full screen width of characters have been 
-		 * output but the cursor is sitting on the right edge instead
-		 * of at the start of the next line.  
-		 * So after we output a full line, we output an extra 
-		 * space and backspace to force the cursor to the 
-		 * beginning of the next line, like a sane terminal.
+		 * Terminals with "ignaw" don't wrap until they *really* need
+		 * to, i.e. when the character *after* the last one to fit on a
+		 * line is output. But they are too hard to deal with when they
+		 * get in the state where a full screen width of characters
+		 * have been output but the cursor is sitting on the right edge
+		 * instead of at the start of the next line.
+		 * So we nudge them into wrapping by outputting a space 
+		 * character plus a backspace.  But do this only if moving 
+		 * forward; if we're moving backward and drawing this line at
+		 * the top of the screen, the space would overwrite the first
+		 * char on the next line.  We don't need to do this "nudge" 
+		 * at the top of the screen anyway.
 		 */
-		linebuf[curr] = ' '; 
+		linebuf[curr] = ' ';
 		attr[curr++] = AT_NORMAL;
 		linebuf[curr] = '\b'; 
 		attr[curr++] = AT_NORMAL;
 	}
 	linebuf[curr] = '\0';
 	attr[curr] = AT_NORMAL;
+}
 
-#if HILITE_SEARCH
-	if (status_col && line_matches > 0)
-	{
-		linebuf[0] = '*';
-		attr[0] = AT_NORMAL|AT_HILITE;
-	}
-#endif
+/*
+ *
+ */
+	public void
+set_status_col(c)
+	char c;
+{
+	linebuf[0] = c;
+	attr[0] = AT_NORMAL|AT_HILITE;
 }
 
 /*
@@ -1244,4 +1255,31 @@ back_raw_line(curr_pos, linep, line_lenp)
 	if (line_lenp != NULL)
 		*line_lenp = size_linebuf - 1 - n;
 	return (new_pos);
+}
+
+/*
+ * Find the shift necessary to show the end of the longest displayed line.
+ */
+	public int
+rrshift()
+{
+	POSITION pos;
+	int save_width;
+	int line;
+	int longest = 0;
+
+	save_width = sc_width;
+	sc_width = INT_MAX;
+	hshift = 0;
+	pos = position(TOP);
+	for (line = 0; line < sc_height && pos != NULL_POSITION; line++)
+	{
+		pos = forw_line(pos);
+		if (column > longest)
+			longest = column;
+	}
+	sc_width = save_width;
+	if (longest < sc_width)
+		return 0;
+	return longest - sc_width;
 }

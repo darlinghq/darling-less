@@ -1,11 +1,10 @@
 /*
- * Copyright (C) 1984-2007  Mark Nudelman
+ * Copyright (C) 1984-2016  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
  *
- * For more information about less, or for information on how to 
- * contact the author, see the README file.
+ * For more information, see the README file.
  */
 
 
@@ -17,11 +16,12 @@
 #include "less.h"
 #include "position.h"
 
-public int hit_eof;	/* Keeps track of how many times we hit end of file */
 public int screen_trashed;
 public int squished;
 public int no_back_scroll = 0;
 public int forw_prompt;
+public int same_pos_bell = 1;
+
 public int display_next_file_or_exit = 0;
 
 extern int sigs;
@@ -35,6 +35,12 @@ extern int ignore_eoi;
 extern int clear_bg;
 extern int final_attr;
 extern int oldbot;
+#if HILITE_SEARCH
+extern int size_linebuf;
+extern int hilite_search;
+extern int status_col;
+#endif
+
 extern int unix2003_compat;
 #if TAGS
 extern char *tagoption;
@@ -53,25 +59,47 @@ eof_bell()
 }
 
 /*
- * Check to see if the end of file is currently "displayed".
+ * Check to see if the end of file is currently displayed.
  */
-	static void
-eof_check()
+	public int
+eof_displayed()
 {
 	POSITION pos;
 
 	if (ignore_eoi)
-		return;
-	if (ABORT_SIGS())
-		return;
+		return (0);
+
+	if (ch_length() == NULL_POSITION)
+		/*
+		 * If the file length is not known,
+		 * we can't possibly be displaying EOF.
+		 */
+		return (0);
+
 	/*
 	 * If the bottom line is empty, we are at EOF.
 	 * If the bottom line ends at the file length,
 	 * we must be just at EOF.
 	 */
 	pos = position(BOTTOM_PLUS_ONE);
-	if (pos == NULL_POSITION || pos == ch_length())
-		hit_eof++;
+	return (pos == NULL_POSITION || pos == ch_length());
+}
+
+/*
+ * Check to see if the entire file is currently displayed.
+ */
+	public int
+entire_file_displayed()
+{
+	POSITION pos;
+
+	/* Make sure last line of file is displayed. */
+	if (!eof_displayed())
+		return (0);
+
+	/* Make sure first line of file is displayed. */
+	pos = position(0);
+	return (pos == NULL_POSITION || pos == 0);
 }
 
 /*
@@ -106,7 +134,6 @@ forw(n, pos, force, only_last, nblank)
 	int only_last;
 	int nblank;
 {
-	int eof = 0;
 	int nlines = 0;
 	int do_repaint;
 	static int first_time = 1;
@@ -124,6 +151,13 @@ forw(n, pos, force, only_last, nblank)
 	 */
 	do_repaint = (only_last && n > sc_height-1) || 
 		(forw_scroll >= 0 && n > forw_scroll && n != sc_height-1);
+
+#if HILITE_SEARCH
+	if (hilite_search == OPT_ONPLUS || is_filtering() || status_col) {
+		prep_hilite(pos, pos + 4*size_linebuf, ignore_eoi ? 1 : -1);
+		pos = next_unfiltered(pos);
+	}
+#endif
 
 	if (!do_repaint)
 	{
@@ -186,6 +220,9 @@ forw(n, pos, force, only_last, nblank)
 			 * Get the next line from the file.
 			 */
 			pos = forw_line(pos);
+#if HILITE_SEARCH
+			pos = next_unfiltered(pos);
+#endif
 			if (pos == NULL_POSITION)
 			{
 				/*
@@ -194,7 +231,6 @@ forw(n, pos, force, only_last, nblank)
 				 * Even if force is true, stop when the last
 				 * line in the file reaches the top of screen.
 				 */
-				eof = 1;
 				if (!force && position(TOP) != NULL_POSITION)
 					break;
 				if (!empty_lines(0, 0) && 
@@ -255,13 +291,7 @@ forw(n, pos, force, only_last, nblank)
 		forw_prompt = 1;
 	}
 
-	if (ignore_eoi)
-		hit_eof = 0;
-	else if (eof && !ABORT_SIGS())
-		hit_eof++;
-	else
-		eof_check();
-	if (nlines == 0)
+	if (nlines == 0 && same_pos_bell)
 		eof_bell();
 	else if (do_repaint)
 		repaint();
@@ -284,12 +314,20 @@ back(n, pos, force, only_last)
 
 	squish_check();
 	do_repaint = (n > get_back_scroll() || (only_last && n > sc_height-1));
-	hit_eof = 0;
+#if HILITE_SEARCH
+	if (hilite_search == OPT_ONPLUS || is_filtering() || status_col) {
+		prep_hilite((pos < 3*size_linebuf) ?  0 : pos - 3*size_linebuf, pos, -1);
+	}
+#endif
 	while (--n >= 0)
 	{
 		/*
 		 * Get the previous line of input.
 		 */
+#if HILITE_SEARCH
+		pos = prev_unfiltered(pos);
+#endif
+
 		pos = back_line(pos);
 		if (pos == NULL_POSITION)
 		{
@@ -313,8 +351,7 @@ back(n, pos, force, only_last)
 		}
 	}
 
-	eof_check();
-	if (nlines == 0)
+	if (nlines == 0 && same_pos_bell)
 		eof_bell();
 	else if (do_repaint)
 		repaint();
@@ -335,7 +372,7 @@ forward(n, force, only_last)
 {
 	POSITION pos;
 
-	if (get_quit_at_eof() && hit_eof && !(ch_getflags() & CH_HELPFILE))
+	if (get_quit_at_eof() && eof_displayed() && !(ch_getflags() & CH_HELPFILE))
 	{
 		/*
 		 * If the -e flag is set and we're trying to go
@@ -369,7 +406,6 @@ forward(n, force, only_last)
 		} else
 		{
 			eof_bell();
-			hit_eof++;
 			return;
 		}
 	}

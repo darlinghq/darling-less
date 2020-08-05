@@ -1,11 +1,10 @@
 /*
- * Copyright (C) 1984-2007  Mark Nudelman
+ * Copyright (C) 1984-2016  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
  *
- * For more information about less, or for information on how to 
- * contact the author, see the README file.
+ * For more information, see the README file.
  */
 
 
@@ -16,7 +15,6 @@
 #include "less.h"
 #include "position.h"
 
-extern int hit_eof;
 extern int jump_sline;
 extern int squished;
 extern int screen_trashed;
@@ -38,6 +36,12 @@ jump_forw()
 		error("Cannot seek to end of file", NULL_PARG);
 		return;
 	}
+	/* 
+	 * Note; lastmark will be called later by jump_loc, but it fails
+	 * because the position table has been cleared by pos_clear below.
+	 * So call it here before calling pos_clear.
+	 */
+	lastmark();
 	/*
 	 * Position the last line in the file at the last screen line.
 	 * Go back one line from the end of the file
@@ -55,6 +59,24 @@ jump_forw()
 		if (position(sc_height-1) != end_pos)
 			repaint();
 	}
+}
+
+/*
+ * Jump to the last buffered line in the file.
+ */
+	public void
+jump_forw_buffered()
+{
+	POSITION end;
+
+	if (ch_end_buffer_seek())
+	{
+		error("Cannot seek to end of buffers", NULL_PARG);
+		return;
+	}
+	end = ch_tell();
+	if (end != NULL_POSITION && end > 0)
+		jump_line_loc(end-1, sc_height-1);
 }
 
 /*
@@ -103,7 +125,11 @@ repaint()
 	 */
 	get_scrpos(&scrpos);
 	pos_clear();
-	jump_loc(scrpos.pos, scrpos.ln);
+	if (scrpos.pos == NULL_POSITION)
+		/* Screen hasn't been drawn yet. */
+		jump_loc(0, 0);
+	else
+		jump_loc(scrpos.pos, scrpos.ln);
 }
 
 /*
@@ -195,8 +221,10 @@ jump_loc(pos, sline)
 			forw(nline, position(BOTTOM_PLUS_ONE), 1, 0, 0);
 		else
 			back(-nline, position(TOP), 1, 0);
+#if HILITE_SEARCH
 		if (show_attn)
 			repaint_hilite(1);
+#endif
 		return;
 	}
 
@@ -234,8 +262,10 @@ jump_loc(pos, sline)
 				 * that we can just scroll there after all.
 				 */
 				forw(sc_height-sline+nline-1, bpos, 1, 0, 0);
+#if HILITE_SEARCH
 				if (show_attn)
 					repaint_hilite(1);
+#endif
 				return;
 			}
 			pos = back_line(pos);
@@ -251,7 +281,6 @@ jump_loc(pos, sline)
 			}
 		}
 		lastmark();
-		hit_eof = 0;
 		squished = 0;
 		screen_trashed = 0;
 		forw(sc_height-1, pos, 1, 0, sline-nline);
@@ -275,6 +304,9 @@ jump_loc(pos, sline)
 				 */
 				break;
 			}
+#if HILITE_SEARCH
+			pos = next_unfiltered(pos);
+#endif
 			if (pos >= tpos)
 			{
 				/* 
@@ -283,8 +315,10 @@ jump_loc(pos, sline)
 				 * that we can just scroll there after all.
 				 */
 				back(nline+1, tpos, 1, 0);
+#if HILITE_SEARCH
 				if (show_attn)
 					repaint_hilite(1);
+#endif
 				return;
 			}
 		}

@@ -6,8 +6,10 @@ if(COMMAND cmake_policy)
 	cmake_policy(SET CMP0003 NEW)
 endif(COMMAND cmake_policy)
 
-include(darling_exe)
-# add_definitions(-DSUPPORT_UTMPX)
+add_compile_definitions(
+	SYSDIR="/etc"
+	BINDIR="/usr/bin"
+)
 
 # Hide warnings
 add_definitions(
@@ -21,12 +23,13 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include(InstallSymlink)
 set(BINARY_PACKAGING_MODE ON)
 
-set(less_sources
+add_darling_executable(less
 	less/brac.c
-	less/charset.c
 	less/ch.c
+	less/charset.c
 	less/cmdbuf.c
 	less/command.c
+	less/cvt.c
 	less/decode.c
 	less/edit.c
 	less/filename.c
@@ -35,32 +38,26 @@ set(less_sources
 	less/ifile.c
 	less/input.c
 	less/jump.c
-	#less/lessecho.c
 	less/line.c
 	less/linenum.c
 	less/lsystem.c
 	less/main.c
 	less/mark.c
-	#less/mkhelp.c
 	less/optfunc.c
 	less/option.c
 	less/opttbl.c
 	less/os.c
 	less/output.c
+	less/pattern.c
 	less/position.c
 	less/prompt.c
-	#less/regexp.c
 	less/screen.c
-	#less/scrsize.c
 	less/search.c
 	less/signal.c
 	less/tags.c
 	less/ttyin.c
 	less/version.c
-
-	)
-
-add_darling_executable(less ${less_sources})
+)
 add_darling_executable(lessecho less/lessecho.c)
 
 target_link_libraries(less ncurses)
@@ -69,4 +66,5 @@ InstallSymlink(less libexec/darling/usr/bin/more)
 install(TARGETS less lessecho
 	DESTINATION libexec/darling/usr/bin)
 
-install(FILES less.1 more.1 lessecho.1 DESTINATION libexec/darling/usr/share/man/man1)
+install(FILES less.1 lessecho.1 DESTINATION libexec/darling/usr/share/man/man1)
+InstallSymlink(less.1 libexec/darling/usr/share/man/man1/more.1)
